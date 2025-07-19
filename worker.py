@@ -13,7 +13,7 @@ import requests
 # Import lớp xử lý chính từ mã nguồn của bạn
 # Đảm bảo file 'infer_concurrent.py' nằm trong cùng thư mục hoặc trong PYTHONPATH
 try:
-    from infer_concurent import VideoKeyframeExtractor
+    from infer_concurent_pytorch import VideoKeyframeExtractor
 except ImportError:
     print("Lỗi: Không thể import 'VideoKeyframeExtractor' từ 'infer_concurrent.py'.")
     print("Hãy đảm bảo 'worker.py' và 'infer_concurrent.py' ở trong cùng một thư mục.")
@@ -178,7 +178,7 @@ def main_loop(server_url: str, videos_dir: Path, mode: Literal['local', 'colab']
         # Khởi tạo extractor. Thư mục output sẽ được ghi đè sau,
         # nên giá trị ban đầu không quá quan trọng.
         extractor = VideoKeyframeExtractor(
-            transnet_weights="transnetv2-weights",
+            transnet_weights="transnetv2-pytorch-weights.pth",
             output_dir=str(worker_temp_dir), # Mặc định là thư mục tạm
             sample_rate=WorkerConfig.SAMPLE_RATE,
             max_frames_per_shot=WorkerConfig.MAX_FRAMES_PER_SHOT
