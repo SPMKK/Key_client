@@ -201,7 +201,7 @@ class TransNetV2:
 
 class VideoKeyframeExtractor:
     def __init__(self, transnet_weights=None, output_dir="keyframes", 
-                 sample_rate=1, max_frames_per_shot=64, model_path="google/siglip2-base-patch16-512"):
+                 sample_rate=1, max_frames_per_shot=16, model_path="google/siglip2-base-patch16-512"):
         self.device = "cuda"
         self.transnet = TransNetV2(transnet_weights)
         self.model, self.preprocess = clip.load('ViT-B/32', self.device)
@@ -245,7 +245,7 @@ class VideoKeyframeExtractor:
 
     def extract_clip_features(self, frames: List[np.ndarray], shot_id: int = None) -> np.ndarray:
         features = []
-        batch_size = 16
+        batch_size = 8
         progress_prefix = f"[CLIP][Shot {shot_id}]" if shot_id is not None else "[CLIP]"
 
         # Đảm bảo chỉ MỘT luồng truy cập GPU tại một thời điểm
