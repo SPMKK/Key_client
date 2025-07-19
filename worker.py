@@ -6,7 +6,7 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal
 
 import requests
 
@@ -56,19 +56,17 @@ def setup_logging(worker_id: str):
 
 # --- 3. Các hàm tương tác với Server ---
 
-def get_task_from_server(server_url: str) -> Optional[Dict]:
+def get_task_from_server(server_url: str, mode: str) -> Optional[Dict]:
     """
     Lấy một task mới từ server.
-    Returns:
-        Một dictionary chứa thông tin task (e.g., {'video_id': 'abc', 'filename': 'abc.mp4'})
-        hoặc None nếu không có task hoặc có lỗi.
     """
     get_batch_url = f"{server_url}/get_batch"
-    payload = {"size": 1} # Worker này chỉ xử lý 1 task tại một thời điểm
+    # Thêm 'mode' vào payload để server biết cách phản hồi
+    payload = {"size": 1, "mode": mode} 
     try:
-        logging.info(f"Đang hỏi server {get_batch_url} để lấy task mới...")
+        logging.info(f"Đang hỏi server {get_batch_url} để lấy task mới (mode={mode})...")
         response = requests.post(get_batch_url, json=payload, timeout=15)
-        response.raise_for_status()  # Ném lỗi nếu status code là 4xx hoặc 5xx
+        response.raise_for_status()
 
         tasks = response.json()
         if not tasks:
@@ -76,7 +74,7 @@ def get_task_from_server(server_url: str) -> Optional[Dict]:
             return None
 
         task = tasks[0]
-        logging.info(f"Đã nhận task: video_id='{task['video_id']}', filename='{task['filename']}'")
+        logging.info(f"Đã nhận task: {task}") # Log toàn bộ task để thấy result_path
         return task
     except requests.exceptions.RequestException as e:
         logging.error(f"Không thể kết nối hoặc giao tiếp với server: {e}")
@@ -84,6 +82,27 @@ def get_task_from_server(server_url: str) -> Optional[Dict]:
     except Exception as e:
         logging.error(f"Lỗi không xác định khi lấy task: {e}")
         return None
+
+#----LOCAL ONLY ----
+def report_completion_to_server(server_url: str, video_id: str) -> bool:
+    """Chỉ sử dụng ở mode 'local'."""
+    report_url = f"{server_url}/report_done"
+    try:
+        logging.info(f"Đang báo cáo hoàn thành cho server về video_id '{video_id}'...")
+        # Sử dụng params thay vì data cho phương thức GET/POST với query string
+        response = requests.post(report_url, params={'video_id': video_id}, timeout=30)
+        response.raise_for_status()
+        logging.info(f"Server đã xác nhận hoàn thành cho '{video_id}'. Phản hồi: {response.json()}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Báo cáo hoàn thành cho '{video_id}' thất bại: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logging.error(f"Chi tiết lỗi từ server: {e.response.text}")
+        return False
+    except Exception as e:
+        logging.error(f"Lỗi không xác định khi báo cáo hoàn thành: {e}")
+        return False
+    
 
 def upload_result_to_server(server_url: str, video_id: str, zip_path: Path) -> bool:
     """
@@ -143,22 +162,24 @@ def create_result_zip(output_dir: Path, video_id: str, zip_destination_dir: Path
 
 # --- 5. Vòng lặp xử lý chính ---
 
-def main_loop(server_url: str, videos_dir: Path):
+def main_loop(server_url: str, videos_dir: Path, mode: Literal['local', 'colab']):
     """
     Vòng lặp chính của worker: lấy task, xử lý, và gửi kết quả.
     """
+    logging.info(f"Worker đang hoạt động ở chế độ: {mode.upper()}")
+    
+    # --- PHẦN BỊ THIẾU ĐÃ ĐƯỢC THÊM LẠI ---
     # Khởi tạo một lần duy nhất
-    # Thư mục này sẽ chứa các thư mục con cho mỗi lần xử lý
-    task_working_dir = WorkerConfig.WORKING_DIR
-    task_working_dir.mkdir(exist_ok=True)
+    worker_temp_dir = WorkerConfig.WORKING_DIR # Dùng cho mode colab
+    worker_temp_dir.mkdir(exist_ok=True)
 
     logging.info("Đang khởi tạo VideoKeyframeExtractor...")
     try:
-        # Khởi tạo extractor với các tham số đã định nghĩa
-        # Thư mục output sẽ là thư mục làm việc tạm thời của worker
+        # Khởi tạo extractor. Thư mục output sẽ được ghi đè sau,
+        # nên giá trị ban đầu không quá quan trọng.
         extractor = VideoKeyframeExtractor(
             transnet_weights="transnetv2-weights",
-            output_dir=str(task_working_dir),
+            output_dir=str(worker_temp_dir), # Mặc định là thư mục tạm
             sample_rate=WorkerConfig.SAMPLE_RATE,
             max_frames_per_shot=WorkerConfig.MAX_FRAMES_PER_SHOT
         )
@@ -166,75 +187,73 @@ def main_loop(server_url: str, videos_dir: Path):
     except Exception as e:
         logging.critical(f"Không thể khởi tạo VideoKeyframeExtractor: {e}. Worker sẽ thoát.", exc_info=True)
         return
+    # --- KẾT THÚC PHẦN SỬA LỖI ---
 
     while True:
-        task = get_task_from_server(server_url)
+        task = get_task_from_server(server_url, mode)
 
         if not task:
             time.sleep(WorkerConfig.POLL_INTERVAL_SECONDS)
             continue
 
         video_id = task['video_id']
-        video_filename = task['filename']
-        source_video_path = videos_dir / video_filename
-
-        # Thư mục tạm thời cho kết quả của task này
-        # Ví dụ: ./worker_temp/L01_V002/
-        task_output_dir = task_working_dir / video_id
+        source_video_path = videos_dir / task['filename']
+        task_output_dir = None # Để dọn dẹp
         zip_file_path = None
 
         try:
-            # 1. Kiểm tra file video nguồn
             if not source_video_path.exists():
-                logging.error(f"Không tìm thấy file video nguồn: {source_video_path}. Bỏ qua task này.")
-                # Trong tương lai có thể báo lỗi cho server ở đây
+                logging.error(f"Không tìm thấy file video nguồn: {source_video_path}. Bỏ qua task.")
                 continue
 
-            # 2. Chạy xử lý trích xuất keyframe
             logging.info(f"Bắt đầu xử lý video: {source_video_path}")
             start_time = time.time()
-            # Gọi trực tiếp phương thức từ lớp đã import
-            extractor.extract_keyframes(str(source_video_path))
-            end_time = time.time()
-            logging.info(f"Hoàn thành xử lý '{video_id}' trong {end_time - start_time:.2f} giây.")
 
-            # 3. Nén kết quả
-            # Kết quả từ extractor sẽ nằm trong `task_working_dir`
-            zip_file_path = create_result_zip(task_working_dir, video_id, task_working_dir)
-            if not zip_file_path:
-                logging.error(f"Không thể tạo file ZIP cho '{video_id}'. Bỏ qua việc upload.")
-                continue
+            # ----- LOGIC THEO MODE -----
+            if mode == 'local':
+                # Server cung cấp đường dẫn kết quả tuyệt đối
+                result_path = Path(task['result_path'])
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Ghi đè thư mục output của extractor cho task này
+                extractor.output_dir = str(result_path.parent)
+                extractor.extract_keyframes(str(source_video_path))
 
-            # 4. Tải kết quả lên server
-            success = upload_result_to_server(server_url, video_id, zip_file_path)
-            if success:
-                logging.info(f"Hoàn thành vòng lặp cho task '{video_id}' thành công.")
-            else:
-                logging.warning(f"Vòng lặp cho task '{video_id}' kết thúc với lỗi upload.")
+                logging.info(f"Hoàn thành xử lý '{video_id}' trong {time.time() - start_time:.2f} giây.")
 
+                # Báo cáo hoàn thành cho server, không cần upload
+                report_completion_to_server(server_url, video_id)
+
+            else: # mode == 'colab' (logic cũ)
+                # Ghi vào thư mục tạm thời của worker
+                task_output_dir = worker_temp_dir / video_id
+                extractor.output_dir = str(worker_temp_dir)
+                extractor.extract_keyframes(str(source_video_path))
+                
+                logging.info(f"Hoàn thành xử lý '{video_id}' trong {time.time() - start_time:.2f} giây.")
+
+                # Nén và tải kết quả lên server
+                zip_file_path = create_result_zip(worker_temp_dir, video_id, worker_temp_dir)
+                if zip_file_path:
+                    upload_result_to_server(server_url, video_id, zip_file_path)
+        
         except Exception as e:
             logging.error(f"Lỗi nghiêm trọng xảy ra khi xử lý task '{video_id}': {e}", exc_info=True)
-            # Lỗi này sẽ khiến task bị treo ở trạng thái IN_PROGRESS trên server
-            # và sẽ được server tự động reset sau một khoảng thời gian timeout.
 
         finally:
-            # 5. Dọn dẹp
-            logging.info(f"Bắt đầu dọn dẹp tài nguyên cho task '{video_id}'...")
+            logging.info(f"Bắt đầu dọn dẹp cho task '{video_id}'...")
             if zip_file_path and zip_file_path.exists():
-                try:
-                    os.remove(zip_file_path)
-                    logging.info(f"Đã xóa file ZIP tạm thời: {zip_file_path}")
-                except OSError as e:
-                    logging.warning(f"Không thể xóa file ZIP tạm thời {zip_file_path}: {e}")
-
-            if task_output_dir.exists():
+                os.remove(zip_file_path)
+            
+            # Chỉ xóa thư mục output nếu là mode colab (vì nó là thư mục tạm)
+            if mode == 'colab' and task_output_dir and task_output_dir.exists():
                 try:
                     shutil.rmtree(task_output_dir)
                     logging.info(f"Đã xóa thư mục kết quả tạm thời: {task_output_dir}")
                 except OSError as e:
-                    logging.warning(f"Không thể xóa thư mục kết quả tạm thời {task_output_dir}: {e}")
+                    logging.warning(f"Không thể xóa thư mục tạm {task_output_dir}: {e}")
+            
             logging.info(f"Hoàn tất dọn dẹp cho task '{video_id}'.")
-            # Nghỉ một chút trước khi lấy task mới
             time.sleep(2)
 
 
@@ -255,6 +274,13 @@ if __name__ == "__main__":
         required=True,
         help="Đường dẫn đến thư mục 'videos' được chia sẻ, nơi chứa các file video gốc."
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=['local', 'colab'],
+        default='colab',
+        help="Chế độ hoạt động: 'local' để ghi trực tiếp vào thư mục kết quả, 'colab' để nén và upload."
+    )
     args = parser.parse_args()
 
     # Chuyển đổi đường dẫn thành đối tượng Path
@@ -269,7 +295,7 @@ if __name__ == "__main__":
     logging.info(f"Sử dụng thư mục videos tại: {videos_dir_path}")
 
     try:
-        main_loop(args.server_url, videos_dir_path)
+        main_loop(args.server_url, videos_dir_path, args.mode)
     except KeyboardInterrupt:
         logging.info("Đã nhận tín hiệu thoát (Ctrl+C). Worker đang dừng...")
     finally:
