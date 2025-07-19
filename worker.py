@@ -11,7 +11,7 @@ from typing import Dict, Optional, Literal
 import requests
 
 # Import lớp xử lý chính từ mã nguồn của bạn
-# Đảm bảo file 'infer_concurrent.py' nằm trong cùng thư mục hoặc trong PYTHONPATH
+# Đảm bảo file 'infer_concurent.py' nằm trong cùng thư mục hoặc trong PYTHONPATH
 try:
     from infer_concurent_pytorch import VideoKeyframeExtractor
 except ImportError:
