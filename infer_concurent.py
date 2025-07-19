@@ -100,9 +100,9 @@ class TransNetV2:
             except RuntimeError as e:
                 print(f"[TransNetV2] Error setting GPU memory growth: {e}")
                 
-                # --- OPTION 2: SET A HARD VRAM LIMIT (UNCOMMENT TO USE) ---
-                # Use this if you need to enforce a strict memory budget for TransNetV2.
-                # For example, limit it to 2048 MB (2 GB).
+            # --- OPTION 2: SET A HARD VRAM LIMIT (UNCOMMENT TO USE) ---
+            # Use this if you need to enforce a strict memory budget for TransNetV2.
+            # For example, limit it to 2048 MB (2 GB).
             # memory_limit_mb = 3072
             # for gpu in gpus:
             #     tf.config.experimental.set_virtual_device_configuration(
@@ -201,15 +201,14 @@ class TransNetV2:
 
 class VideoKeyframeExtractor:
     def __init__(self, transnet_weights=None, output_dir="keyframes", 
-                 sample_rate=1, max_frames_per_shot=100, model_path="google/siglip2-large-patch16-512"):
+                 sample_rate=1, max_frames_per_shot=64, model_path="google/siglip2-base-patch16-512"):
+        self.device = "cuda"
         self.transnet = TransNetV2(transnet_weights)
-        self.model =  SiglipModel.from_pretrained(model_path, device_map="auto", attn_implementation="sdpa", torch_dtype=torch.float16).eval()
-        self.preprocess = SiglipProcessor.from_pretrained(model_path)
+        self.model, self.preprocess = clip.load('ViT-B/32', self.device)
         self.ram = RAM.load_tag_model()
         self.output_dir = output_dir
         self.sample_rate = sample_rate
         self.max_frames_per_shot = max_frames_per_shot
-        self.device = "cuda"
         print(f"[CLIP] Using device: {self.device}")
         os.makedirs(output_dir, exist_ok=True)
         # Thread-safe counter for frame filenames
@@ -252,20 +251,26 @@ class VideoKeyframeExtractor:
         # Đảm bảo chỉ MỘT luồng truy cập GPU tại một thời điểm
         with self._gpu_lock: # <-- THÊM DÒNG NÀY
             for i in range(0, len(frames), batch_size):
-                batch_frames = frames[i:i + batch_size]
-                
-                # Chuyển đổi và gửi đến GPU
-                inputs = self.preprocess(images=batch_frames, return_tensors="pt").to(self.device)
+                batch_frames = frames[i:i+batch_size]
 
+                # Convert frames to PIL Images and preprocess for CLIP
+                batch_inputs = torch.stack([
+                    self.preprocess(Image.fromarray(frame))
+                    for frame in batch_frames
+                ]).to(self.device)
+
+                # Extract features
                 with torch.no_grad():
-                    batch_features_raw = self.model.get_image_features(inputs)
-                    batch_features /= batch_features_raw / batch_features_raw.norm(p=2, dim=-1, keepdim=True)
+                    batch_features = self.model.encode_image(batch_inputs)
+                    batch_features /= batch_features.norm(dim=-1, keepdim=True)  # Normalize
 
                 features.append(batch_features.cpu().numpy())
+                print(f"\r[CLIP] Processing frames {i+len(batch_frames)}/{len(frames)}", end="")
                 
                 # Giải phóng bộ nhớ GPU sau mỗi batch nếu có thể
-
-                print(f"\r{progress_prefix} Processing frames {i + len(batch_frames)}/{len(frames)}", end="")
+                del batch_features, batch_inputs
+                torch.cuda.empty_cache() 
+                # print(f"\r{progress_prefix} Processing frames {i + len(batch_frames)}/{len(frames)}", end="")
             
         print(f"\r{progress_prefix} Feature extraction complete.                ")
         return np.vstack(features)
@@ -363,12 +368,13 @@ class VideoKeyframeExtractor:
 
         # 2. Thực hiện Tagging cho từng ảnh trong lô
         if tag_model:
-            for i in range(batch_size):
-                try:
-                    tags = RAM.get_tag(keyframe_paths[i], tag_model)
-                    tags_results[i] = tags
-                except Exception as e:
-                    print(f"[WARNING] Tagging failed for {os.path.basename(keyframe_paths[i])}: {e}")
+            with self._gpu_lock:
+                for i in range(batch_size):
+                    try:
+                        tags = RAM.get_tag(keyframe_paths[i], tag_model)
+                        tags_results[i] = tags
+                    except Exception as e:
+                        print(f"[WARNING] Tagging failed for {os.path.basename(keyframe_paths[i])}: {e}")
 
         # 3. Kết hợp kết quả và trả về
         final_results = []
@@ -407,9 +413,9 @@ class VideoKeyframeExtractor:
         if os.path.exists(video_output_dir): shutil.rmtree(video_output_dir)
         os.makedirs(video_output_dir, exist_ok=True)
 
-        new_video_path = os.path.join(video_output_dir, os.path.basename(video_path))
-        shutil.copy(video_path, new_video_path)
-        video_path = new_video_path
+        # new_video_path = os.path.join(video_output_dir, os.path.basename(video_path))
+        # shutil.copy(video_path, new_video_path)
+        # video_path = new_video_path
         print(f"\n[PIPELINE] Starting processing for: {video_path}")
 
         # --- STAGE 1 (Sequential): Shot Detection and Frame Extraction ---
