@@ -92,24 +92,24 @@ class TransNetV2:
         # Configure TensorFlow to limit GPU memory usage
         gpus = tf.config.experimental.list_physical_devices('GPU')
         if gpus:
-            # try:
-            #     # Limit TensorFlow to use only 30% of GPU memory
-            #     for gpu in gpus:
-            #         tf.config.experimental.set_memory_growth(gpu, True)
-            #     print("[TransNetV2] TensorFlow GPU memory growth enabled")
-            # except RuntimeError as e:
-            #     print(f"[TransNetV2] Error setting GPU memory growth: {e}")
+            try:
+                # Limit TensorFlow to use only 30% of GPU memory
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                print("[TransNetV2] TensorFlow GPU memory growth enabled")
+            except RuntimeError as e:
+                print(f"[TransNetV2] Error setting GPU memory growth: {e}")
                 
                 # --- OPTION 2: SET A HARD VRAM LIMIT (UNCOMMENT TO USE) ---
                 # Use this if you need to enforce a strict memory budget for TransNetV2.
                 # For example, limit it to 2048 MB (2 GB).
-            memory_limit_mb = 3072
-            for gpu in gpus:
-                tf.config.experimental.set_virtual_device_configuration(
-                    gpu,
-                    [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit_mb)]
-                )
-            print(f"[TransNetV2] TensorFlow VRAM usage limited to {memory_limit_mb} MB.")
+            # memory_limit_mb = 3072
+            # for gpu in gpus:
+            #     tf.config.experimental.set_virtual_device_configuration(
+            #         gpu,
+            #         [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit_mb)]
+            #     )
+            # print(f"[TransNetV2] TensorFlow VRAM usage limited to {memory_limit_mb} MB.")
 
         self._input_size = (27, 48, 3)
         try:
