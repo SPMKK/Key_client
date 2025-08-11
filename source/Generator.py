@@ -317,6 +317,7 @@ class Generator:
             raise IOError(f"Failed to process M3U8 playlist '{file_path}': {e}") from e
 
     def chunk_audio_for_gemini(
+        self,
         audio_path,
         max_chunk_mb=18,          # Keep a bit below 20 MB inline limit
         min_chunk_sec=1.0,        # Skip anything shorter than 1 sec

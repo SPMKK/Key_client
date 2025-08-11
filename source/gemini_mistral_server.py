@@ -432,9 +432,9 @@ class GeneratorGemini:
                     
                     console.print(f"[GeneratorGemini] Request successful with key '[cyan]{log_key_display}[/cyan]'.", style="green")
                     return response.text
-                except requests.exceptions.HTTPError as http_err:
+                except requests.HTTPError as http_err:
                     status_code = http_err.response.status_code 
-                    if status_code in ["504", "503", "500", "429"]:
+                    if status_code in ["504", "503", "500", "429", "502"]:
                         if key_info: self.api_key_manager.retire_key(key_info)
                         continue
                     elif status_code in ["403", "400"]:
@@ -444,12 +444,11 @@ class GeneratorGemini:
                         # console.log(f"Unexpected error with key {log_key_display}. Error {e}")
                     else:
                         console.print(f"[GeminiWorker] Unexpected error with key '[cyan]{log_key_display}[/cyan]'. Retrying with another key.", style="bold red")
-                        if key_info: self.api_key_manager.retire_key(key_info)
-                        console.log(f"Unexpected error with key {log_key_display}. Error {e}") # Return empty string for this chunk, don't crash the whole job.
-                        continue
+                        if key_info: self.api_key_manager.retire_key(key_info) # Return empty string for this chunk, don't crash the whole job.
+                        raise f"Unexpected error with key {log_key_display}. Error {e}"
                 except Exception as e:
                     error_str = str(e).lower()
-                    if any(k in error_str for k in ["quota", "rate limit", "exceeded", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "invalid argument"]):
+                    if any(k in error_str for k in ["quota", "rate limit", "exceeded", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "invalid argument", "internal error", "504", "503", "500", "429"]):
                         if key_info: self.api_key_manager.retire_key(key_info)
                         continue
                     elif any(k in error_str for k in permanent_failure_keywords):
@@ -462,8 +461,7 @@ class GeneratorGemini:
                     else:
                         console.print(f"[GeminiWorker] Unexpected error with key '[cyan]{log_key_display}[/cyan]'. Failing. Error Code:500", style="bold red")
                         if key_info: self.api_key_manager.retire_key(key_info)
-                        console.log(f"Unexpected error with key {log_key_display}. Error {e}")
-                        continue
+                        raise f"Unexpected error with key {log_key_display}. Error {e}"
                 finally:
                     if key_info: self.api_key_manager.release_key(key_info)
 
@@ -539,7 +537,7 @@ class GeneratorGemini:
                             else:
                                 # For any other reason (SAFETY=3, MAX_TOKENS=2, etc.), it's a real issue.
                                 raise ValueError(f"Model returned no content for chunk '{file_name}' due to finish reason code: {finish_reason_int}")
-                    except requests.exceptions.HTTPError as http_err:
+                    except requests.HTTPError as http_err:
                         status_code = http_err.response.status_code 
                         if status_code in ["504", "503", "500", "429"]:
                             if key_info: self.api_key_manager.retire_key(key_info)
@@ -556,8 +554,9 @@ class GeneratorGemini:
                             continue
                     except Exception as e:
                         error_str = str(e).lower()
-                        if any(k in error_str for k in ["quota", "rate limit", "exceeded", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "invalid argument"]):
+                        if any(k in error_str for k in ["quota", "rate limit", "exceeded", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "invalid argument","504", "503", "500", "429", "internal error"]):
                             if key_info: self.api_key_manager.retire_key(key_info)
+                            console.log(f"Error with key {log_key_display}. Error {e}")
                             continue
                         elif any(k in error_str for k in permanent_failure_keywords):
                             if key_info:
@@ -570,7 +569,7 @@ class GeneratorGemini:
                             console.print(f"[GeminiWorker] Unexpected error with key '[cyan]{log_key_display}[/cyan]'. Retrying with another key.", style="bold red")
                             if key_info: self.api_key_manager.retire_key(key_info)
                             console.log(f"Unexpected error with key {log_key_display}. Error {e}") # Return empty string for this chunk, don't crash the whole job.
-                            continue
+                            return f"Unexpected error with key {log_key_display}. Error {e}"
                     finally:
                         # Always release the key and the uploaded Google file for this attempt.
                         if key_info:
